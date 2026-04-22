@@ -239,7 +239,7 @@ fn format_reqwest_error(e: &reqwest::Error) -> String {
 fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent(format!("agent-browser/{}", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(600))
         .connect_timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", format_reqwest_error(&e)))
