@@ -17,16 +17,16 @@ All sessions automatically stream to the dashboard. No extra flags are needed.
 
 ### Custom stream port
 
-By default each session binds its WebSocket stream server to an OS-assigned port. To use a specific port, set the `AGENT_BROWSER_STREAM_PORT` environment variable:
+By default each session binds its WebSocket stream server to `127.0.0.1` on an OS-assigned port. To control the bind address or port, set `AGENT_BROWSER_STREAM_ADDR` and `AGENT_BROWSER_STREAM_PORT`:
 
 ```bash
-AGENT_BROWSER_STREAM_PORT=9223 agent-browser open example.com
+AGENT_BROWSER_STREAM_ADDR=0.0.0.0 AGENT_BROWSER_STREAM_PORT=9223 agent-browser open example.com
 ```
 
 You can also use the runtime commands to control streaming on a running session:
 
 ```bash
-agent-browser stream enable --port 9223
+agent-browser stream enable --addr 0.0.0.0 --port 9223
 agent-browser stream status
 agent-browser stream disable
 ```

@@ -2,6 +2,7 @@ use serde_json::Value;
 use std::env;
 use std::fs;
 use std::io::Write;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
@@ -14,7 +15,26 @@ use tokio::sync::{mpsc, Notify, RwLock};
 use super::actions::{execute_command, DaemonState};
 use super::cdp::client::CdpClient;
 use super::state;
-use super::stream::StreamServer;
+use super::stream::{serialize_stream_metadata, StreamServer};
+
+fn configured_stream_addr() -> String {
+    let preferred_addr = env::var("AGENT_BROWSER_STREAM_ADDR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+
+    match preferred_addr.parse::<IpAddr>() {
+        Ok(addr) => addr.to_string(),
+        Err(_) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "Invalid AGENT_BROWSER_STREAM_ADDR '{}', falling back to 127.0.0.1",
+                preferred_addr
+            );
+            "127.0.0.1".to_string()
+        }
+    }
+}
 
 pub async fn run_daemon(session: &str) {
     let socket_dir = get_daemon_socket_dir();
@@ -95,14 +115,25 @@ pub async fn run_daemon(session: &str) {
 
     let mut stream_client: Option<Arc<RwLock<Option<Arc<CdpClient>>>>> = None;
     let mut stream_server_instance: Option<Arc<StreamServer>> = None;
+    let preferred_addr = configured_stream_addr();
     let preferred_port = env::var("AGENT_BROWSER_STREAM_PORT")
         .ok()
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(0);
-    match StreamServer::start_without_client(preferred_port, session.to_string(), true).await {
+    match StreamServer::start_without_client(
+        &preferred_addr,
+        preferred_port,
+        session.to_string(),
+        true,
+    )
+    .await
+    {
         Ok((stream_server, client_slot)) => {
             stream_client = Some(client_slot.clone());
-            if let Err(e) = fs::write(&stream_path, stream_server.port().to_string()) {
+            if let Err(e) = fs::write(
+                &stream_path,
+                serialize_stream_metadata(stream_server.addr(), stream_server.port()),
+            ) {
                 let _ = writeln!(std::io::stderr(), "Failed to write .stream file: {}", e);
             }
             stream_server_instance = Some(Arc::new(stream_server));
@@ -514,6 +545,7 @@ fn get_port_for_session(session: &str) -> u16 {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+    use crate::test_utils::EnvGuard;
 
     #[cfg(windows)]
     #[test]
@@ -578,6 +610,27 @@ mod tests {
             Ok(None) => panic!("try_wait() returned None but child should have exited"),
             Err(e) => panic!("try_wait() should succeed without waitpid(-1): {}", e),
         }
+    }
+
+    #[test]
+    fn test_configured_stream_addr_defaults_to_localhost() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_STREAM_ADDR"]);
+        guard.remove("AGENT_BROWSER_STREAM_ADDR");
+        assert_eq!(configured_stream_addr(), "127.0.0.1");
+    }
+
+    #[test]
+    fn test_configured_stream_addr_accepts_ip_literal() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_STREAM_ADDR"]);
+        guard.set("AGENT_BROWSER_STREAM_ADDR", "0.0.0.0");
+        assert_eq!(configured_stream_addr(), "0.0.0.0");
+    }
+
+    #[test]
+    fn test_configured_stream_addr_falls_back_for_invalid_value() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_STREAM_ADDR"]);
+        guard.set("AGENT_BROWSER_STREAM_ADDR", "localhost");
+        assert_eq!(configured_stream_addr(), "127.0.0.1");
     }
 
     /// Regression test for #1101: idle timeout must fire even while the

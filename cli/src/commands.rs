@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::io::{self, BufRead};
+use std::net::IpAddr;
 
 use crate::color;
 use crate::flags::Flags;
@@ -824,12 +825,30 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                 let mut i = 1;
                 while i < rest.len() {
                     match rest[i] {
+                        "--addr" => {
+                            let value =
+                                rest.get(i + 1)
+                                    .ok_or_else(|| ParseError::MissingArguments {
+                                        context: "stream enable --addr".to_string(),
+                                        usage: "stream enable [--addr <addr>] [--port <port>]",
+                                    })?;
+                            let addr =
+                                value.parse::<IpAddr>().map_err(|_| ParseError::InvalidValue {
+                                    message: format!(
+                                        "Invalid addr: '{}' is not a valid IP address",
+                                        value
+                                    ),
+                                    usage: "stream enable [--addr <addr>] [--port <port>]",
+                                })?;
+                            cmd["addr"] = json!(addr.to_string());
+                            i += 2;
+                        }
                         "--port" => {
                             let value =
                                 rest.get(i + 1)
                                     .ok_or_else(|| ParseError::MissingArguments {
                                         context: "stream enable --port".to_string(),
-                                        usage: "stream enable [--port <port>]",
+                                        usage: "stream enable [--addr <addr>] [--port <port>]",
                                     })?;
                             let port =
                                 value.parse::<u32>().map_err(|_| ParseError::InvalidValue {
@@ -837,7 +856,7 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                                         "Invalid port: '{}' is not a valid integer",
                                         value
                                     ),
-                                    usage: "stream enable [--port <port>]",
+                                    usage: "stream enable [--addr <addr>] [--port <port>]",
                                 })?;
                             if port > u16::MAX as u32 {
                                 return Err(ParseError::InvalidValue {
@@ -845,7 +864,7 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                                         "Invalid port: {} is out of range (valid range: 0-65535)",
                                         port
                                     ),
-                                    usage: "stream enable [--port <port>]",
+                                    usage: "stream enable [--addr <addr>] [--port <port>]",
                                 });
                             }
                             cmd["port"] = json!(port);
@@ -854,7 +873,7 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                         flag => {
                             return Err(ParseError::InvalidValue {
                                 message: format!("Unknown flag for stream enable: {}", flag),
-                                usage: "stream enable [--port <port>]",
+                                usage: "stream enable [--addr <addr>] [--port <port>]",
                             });
                         }
                     }
@@ -3948,6 +3967,7 @@ mod tests {
     fn test_stream_enable_auto_port() {
         let cmd = parse_command(&args("stream enable"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "stream_enable");
+        assert!(cmd.get("addr").is_none());
         assert!(cmd.get("port").is_none());
     }
 
@@ -3955,6 +3975,33 @@ mod tests {
     fn test_stream_enable_with_port() {
         let cmd = parse_command(&args("stream enable --port 9223"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "stream_enable");
+        assert_eq!(cmd["port"], 9223);
+    }
+
+    #[test]
+    fn test_stream_enable_with_addr() {
+        let cmd = parse_command(&args("stream enable --addr 0.0.0.0"), &default_flags())
+            .unwrap();
+        assert_eq!(cmd["action"], "stream_enable");
+        assert_eq!(cmd["addr"], "0.0.0.0");
+    }
+
+    #[test]
+    fn test_stream_enable_with_addr_and_port_in_any_order() {
+        let cmd = parse_command(
+            &args("stream enable --addr 0.0.0.0 --port 9223"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["addr"], "0.0.0.0");
+        assert_eq!(cmd["port"], 9223);
+
+        let cmd = parse_command(
+            &args("stream enable --port 9223 --addr 0.0.0.0"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["addr"], "0.0.0.0");
         assert_eq!(cmd["port"], 9223);
     }
 
@@ -3973,6 +4020,12 @@ mod tests {
     #[test]
     fn test_stream_enable_invalid_port() {
         let result = parse_command(&args("stream enable --port abc"), &default_flags());
+        assert!(matches!(result, Err(ParseError::InvalidValue { .. })));
+    }
+
+    #[test]
+    fn test_stream_enable_invalid_addr() {
+        let result = parse_command(&args("stream enable --addr localhost"), &default_flags());
         assert!(matches!(result, Err(ParseError::InvalidValue { .. })));
     }
 

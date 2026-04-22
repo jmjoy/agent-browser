@@ -54,6 +54,17 @@ agent-browser screenshot result.png
 The browser stays running across commands so these feel like a single
 session. Use `agent-browser close` (or `close --all`) when you're done.
 
+For live preview during longer runs, inspect the runtime WebSocket stream:
+
+```bash
+agent-browser stream status
+agent-browser stream enable --addr 0.0.0.0 --port 9223
+```
+
+`stream status --json` reports the bind address in `addr` and the port in
+`port`. If you bind to `0.0.0.0`, connect using a reachable host or IP for
+the machine rather than the literal bind address.
+
 ## Reading a page
 
 ```bash

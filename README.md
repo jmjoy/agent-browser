@@ -125,8 +125,8 @@ agent-browser pdf <path>              # Save as PDF
 agent-browser snapshot                # Accessibility tree with refs (best for AI)
 agent-browser eval <js>               # Run JavaScript (-b for base64, --stdin for piped input)
 agent-browser connect <port>          # Connect to browser via CDP
-agent-browser stream enable [--port <port>]  # Start runtime WebSocket streaming
-agent-browser stream status           # Show runtime streaming state and bound port
+agent-browser stream enable [--addr <addr>] [--port <port>]  # Start runtime WebSocket streaming
+agent-browser stream status           # Show runtime streaming state, bind address, and port
 agent-browser stream disable          # Stop runtime WebSocket streaming
 agent-browser close                   # Close browser (aliases: quit, exit)
 agent-browser close --all             # Close all active sessions
@@ -1066,26 +1066,26 @@ Stream the browser viewport via WebSocket for live preview or "pair browsing" wh
 
 ### Streaming
 
-Every session automatically starts a WebSocket stream server on an OS-assigned port. Use `stream status` to see the bound port and connection state:
+Every session automatically starts a WebSocket stream server on `127.0.0.1` with an OS-assigned port. Use `stream status` to see the bind address, bound port, and connection state:
 
 ```bash
 agent-browser stream status
 ```
 
-To bind to a specific port, set `AGENT_BROWSER_STREAM_PORT`:
+To control the startup bind address or port, set `AGENT_BROWSER_STREAM_ADDR` and `AGENT_BROWSER_STREAM_PORT`:
 
 ```bash
-AGENT_BROWSER_STREAM_PORT=9223 agent-browser open example.com
+AGENT_BROWSER_STREAM_ADDR=0.0.0.0 AGENT_BROWSER_STREAM_PORT=9223 agent-browser open example.com
 ```
 
 You can also manage streaming at runtime with `stream enable`, `stream disable`, and `stream status`:
 
 ```bash
-agent-browser stream enable --port 9223   # Re-enable on a specific port
+agent-browser stream enable --addr 0.0.0.0 --port 9223   # Re-enable on a specific bind address and port
 agent-browser stream disable              # Stop streaming for the session
 ```
 
-The WebSocket server streams the browser viewport and accepts input events.
+The WebSocket server streams the browser viewport and accepts input events. `0.0.0.0` is only the bind address, so connect using a reachable host or IP for your machine.
 
 ### WebSocket Protocol
 

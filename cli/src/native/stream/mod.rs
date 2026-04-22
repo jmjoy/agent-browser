@@ -9,6 +9,7 @@ pub use cdp_loop::{ack_screencast_frame, start_screencast, stop_screencast};
 pub use dashboard::run_dashboard_server;
 
 use serde_json::{json, Value};
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -42,7 +43,48 @@ impl Default for FrameMetadata {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StreamMetadata {
+    pub addr: String,
+    pub port: u16,
+}
+
+pub(crate) fn serialize_stream_metadata(addr: &str, port: u16) -> String {
+    json!({
+        "addr": addr,
+        "port": port,
+    })
+    .to_string()
+}
+
+pub(crate) fn parse_stream_metadata(raw: &str) -> Option<StreamMetadata> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(port) = trimmed.parse::<u16>() {
+        return Some(StreamMetadata {
+            addr: "127.0.0.1".to_string(),
+            port,
+        });
+    }
+
+    let value: Value = serde_json::from_str(trimmed).ok()?;
+    let addr = value.get("addr")?.as_str()?.parse::<IpAddr>().ok()?;
+    let port = value
+        .get("port")
+        .and_then(|value| value.as_u64())
+        .and_then(|port| u16::try_from(port).ok())?;
+
+    Some(StreamMetadata {
+        addr: addr.to_string(),
+        port,
+    })
+}
+
 pub struct StreamServer {
+    addr: String,
     port: u16,
     session_name: String,
     frame_tx: broadcast::Sender<String>,
@@ -65,12 +107,15 @@ pub struct StreamServer {
 
 impl StreamServer {
     pub async fn start(
+        preferred_addr: &str,
         preferred_port: u16,
         client: Arc<CdpClient>,
         session_id: String,
     ) -> Result<Self, String> {
         let client_slot = Arc::new(RwLock::new(Some(client)));
-        let (server, _) = Self::start_inner(preferred_port, client_slot, session_id, true).await?;
+        let (server, _) =
+            Self::start_inner(preferred_addr, preferred_port, client_slot, session_id, true)
+                .await?;
         Ok(server)
     }
 
@@ -81,12 +126,20 @@ impl StreamServer {
     /// OS-assigned port (used by daemon startup). When false, the error propagates
     /// (used by the runtime `stream_enable` command).
     pub async fn start_without_client(
+        preferred_addr: &str,
         preferred_port: u16,
         session_id: String,
         allow_port_fallback: bool,
     ) -> Result<(Self, Arc<RwLock<Option<Arc<CdpClient>>>>), String> {
         let client_slot = Arc::new(RwLock::new(None::<Arc<CdpClient>>));
-        Self::start_inner(preferred_port, client_slot, session_id, allow_port_fallback).await
+        Self::start_inner(
+            preferred_addr,
+            preferred_port,
+            client_slot,
+            session_id,
+            allow_port_fallback,
+        )
+        .await
     }
 
     /// Notify the background CDP listener that the client has changed (browser launched/closed).
@@ -155,16 +208,16 @@ impl StreamServer {
     }
 
     async fn start_inner(
+        preferred_addr: &str,
         preferred_port: u16,
         client_slot: Arc<RwLock<Option<Arc<CdpClient>>>>,
         session_id: String,
         allow_port_fallback: bool,
     ) -> Result<(Self, Arc<RwLock<Option<Arc<CdpClient>>>>), String> {
-        let addr = format!("127.0.0.1:{}", preferred_port);
-        let listener = match TcpListener::bind(&addr).await {
+        let listener = match TcpListener::bind((preferred_addr, preferred_port)).await {
             Ok(l) => l,
             Err(_) if allow_port_fallback && preferred_port != 0 => {
-                TcpListener::bind("127.0.0.1:0")
+                TcpListener::bind((preferred_addr, 0))
                     .await
                     .map_err(|e| format!("Failed to bind stream server: {}", e))?
             }
@@ -174,6 +227,7 @@ impl StreamServer {
         let actual_addr = listener
             .local_addr()
             .map_err(|e| format!("Failed to get stream address: {}", e))?;
+        let addr = actual_addr.ip().to_string();
         let port = actual_addr.port();
 
         let (frame_tx, _) = broadcast::channel::<String>(64);
@@ -258,6 +312,7 @@ impl StreamServer {
 
         Ok((
             Self {
+                addr,
                 port,
                 session_name: session_id,
                 frame_tx,
@@ -282,6 +337,10 @@ impl StreamServer {
 
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    pub fn addr(&self) -> &str {
+        &self.addr
     }
 
     /// Broadcast a raw frame string (legacy).
@@ -482,5 +541,30 @@ mod tests {
         assert_eq!(meta.device_width, 1280);
         assert_eq!(meta.device_height, 720);
         assert_eq!(meta.page_scale_factor, 1.0);
+    }
+
+    #[test]
+    fn test_stream_metadata_round_trip_json() {
+        let raw = serialize_stream_metadata("0.0.0.0", 9223);
+        let metadata = parse_stream_metadata(&raw).expect("json metadata should parse");
+        assert_eq!(
+            metadata,
+            StreamMetadata {
+                addr: "0.0.0.0".to_string(),
+                port: 9223,
+            }
+        );
+    }
+
+    #[test]
+    fn test_stream_metadata_supports_legacy_port_only_format() {
+        let metadata = parse_stream_metadata("9223").expect("legacy metadata should parse");
+        assert_eq!(
+            metadata,
+            StreamMetadata {
+                addr: "127.0.0.1".to_string(),
+                port: 9223,
+            }
+        );
     }
 }

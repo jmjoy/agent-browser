@@ -272,11 +272,12 @@ async fn e2e_runtime_stream_enable_before_launch_attaches_and_disables() {
     assert_eq!(get_data(&resp)["enabled"], false);
 
     let resp = execute_command(
-        &json!({ "id": "2", "action": "stream_enable", "port": 0 }),
+        &json!({ "id": "2", "action": "stream_enable", "addr": "0.0.0.0", "port": 0 }),
         &mut state,
     )
     .await;
     assert_success(&resp);
+    assert_eq!(get_data(&resp)["addr"], "0.0.0.0");
     let port = get_data(&resp)["port"]
         .as_u64()
         .expect("stream enable should report the bound port");
@@ -286,6 +287,12 @@ async fn e2e_runtime_stream_enable_before_launch_attaches_and_disables() {
     assert!(
         stream_path.exists(),
         "runtime enable should create .stream metadata"
+    );
+    let stream_metadata = std::fs::read_to_string(&stream_path)
+        .expect("runtime stream metadata should be readable");
+    assert!(
+        stream_metadata.contains("\"addr\":\"0.0.0.0\""),
+        "stream metadata should record the configured bind address"
     );
 
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}"))

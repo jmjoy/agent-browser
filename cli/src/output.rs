@@ -112,6 +112,7 @@ fn format_stream_status_text(action: Option<&str>, data: &serde_json::Value) -> 
                 return Some("Streaming disabled".to_string());
             }
 
+            let addr = data.get("addr").and_then(|v| v.as_str())?;
             let port = data.get("port").and_then(|v| v.as_u64())?;
             let connected = data
                 .get("connected")
@@ -123,7 +124,7 @@ fn format_stream_status_text(action: Option<&str>, data: &serde_json::Value) -> 
                 .unwrap_or(false);
 
             Some(format!(
-                "Streaming enabled on ws://127.0.0.1:{port}\nConnected: {connected}\nScreencasting: {screencasting}"
+              "Streaming enabled\nBind address: {addr}\nPort: {port}\nConnected: {connected}\nScreencasting: {screencasting}"
             ))
         }
         _ => None,
@@ -2603,20 +2604,22 @@ Examples:
 agent-browser stream - Manage live WebSocket browser streaming
 
 Usage:
-  agent-browser stream enable [--port <port>]
+  agent-browser stream enable [--addr <addr>] [--port <port>]
   agent-browser stream disable
   agent-browser stream status
 
 Enables or disables the session-scoped WebSocket stream server without restarting
-an already-running daemon. If --port is omitted, agent-browser binds an
-available localhost port automatically and reports it back.
+an already-running daemon. If --addr is omitted, agent-browser binds to
+127.0.0.1. If --port is omitted, agent-browser binds an available port
+automatically and reports it back.
 
 Notes:
   - 'stream enable' creates the WebSocket server.
   - WebSocket clients trigger frame streaming automatically.
   - 'screencast_start' and 'screencast_stop' still control explicit CDP screencasts.
-  - Streaming is always enabled. Set AGENT_BROWSER_STREAM_PORT to bind to a
-    specific port instead of the default OS-assigned port.
+  - Streaming is always enabled. Set AGENT_BROWSER_STREAM_ADDR and
+    AGENT_BROWSER_STREAM_PORT to control the startup bind address and port.
+  - 0.0.0.0 is a bind address. Use a reachable host or IP when connecting.
 
 Global Options:
   --json               Output as JSON
@@ -2625,7 +2628,9 @@ Global Options:
 Examples:
   agent-browser stream status
   agent-browser stream enable
+  agent-browser stream enable --addr 0.0.0.0
   agent-browser stream enable --port 9223
+  agent-browser stream enable --addr 0.0.0.0 --port 9223
   agent-browser stream disable
 "##
         }
@@ -2983,9 +2988,9 @@ Debug:
   clipboard <op> [text]      Read/write clipboard (read, write, copy, paste)
 
 Streaming:
-  stream enable [--port <n>] Start runtime WebSocket streaming for this session
+  stream enable [--addr <ip>] [--port <n>] Start runtime WebSocket streaming for this session
   stream disable             Stop runtime WebSocket streaming
-  stream status              Show streaming status and active port
+  stream status              Show streaming status, bind address, and active port
 
 Batch:
   batch [--bail] ["cmd" ...]  Execute multiple commands sequentially (args or stdin)
@@ -3122,6 +3127,7 @@ Environment:
   AGENT_BROWSER_SESSION_NAME     Auto-save/load state persistence name
   AGENT_BROWSER_STATE_EXPIRE_DAYS Auto-delete saved states older than N days (default: 30)
   AGENT_BROWSER_ENCRYPTION_KEY   64-char hex key for AES-256-GCM session encryption
+  AGENT_BROWSER_STREAM_ADDR      Override WebSocket streaming bind address (default: 127.0.0.1)
   AGENT_BROWSER_STREAM_PORT      Override WebSocket streaming port (default: OS-assigned)
   AGENT_BROWSER_IDLE_TIMEOUT_MS  Auto-shutdown daemon after N ms of inactivity (disabled by default)
   AGENT_BROWSER_IOS_DEVICE       Default iOS device name
@@ -3163,6 +3169,7 @@ Examples:
   agent-browser --cdp 9222 snapshot      # Connect via CDP port
   agent-browser --auto-connect snapshot  # Auto-discover running Chrome
   agent-browser stream enable            # Start runtime streaming on an auto-selected port
+  agent-browser stream enable --addr 0.0.0.0 --port 9223  # Bind runtime streaming on all interfaces
   agent-browser stream status            # Inspect runtime streaming state
   agent-browser --color-scheme dark open example.com  # Dark mode
   agent-browser --profile Default open gmail.com        # Reuse Chrome login state
@@ -3279,6 +3286,7 @@ mod tests {
     fn test_format_stream_status_text_for_enabled_stream() {
         let data = json!({
             "enabled": true,
+          "addr": "0.0.0.0",
             "port": 9223,
             "connected": true,
             "screencasting": false
@@ -3288,7 +3296,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "Streaming enabled on ws://127.0.0.1:9223\nConnected: true\nScreencasting: false"
+            "Streaming enabled\nBind address: 0.0.0.0\nPort: 9223\nConnected: true\nScreencasting: false"
         );
     }
 

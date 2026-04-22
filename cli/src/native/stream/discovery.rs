@@ -3,6 +3,8 @@ use std::path::Path;
 
 use crate::connection::get_socket_dir;
 
+use super::parse_stream_metadata;
+
 pub(super) fn discover_sessions() -> String {
     let dir = get_socket_dir();
     let mut sessions = Vec::new();
@@ -12,8 +14,8 @@ pub(super) fn discover_sessions() -> String {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             if let Some(session) = name_str.strip_suffix(".stream") {
-                if let Ok(port_str) = std::fs::read_to_string(entry.path()) {
-                    if let Ok(port) = port_str.trim().parse::<u16>() {
+                if let Ok(stream_str) = std::fs::read_to_string(entry.path()) {
+                    if let Some(metadata) = parse_stream_metadata(&stream_str) {
                         let pid_path = dir.join(format!("{}.pid", session));
                         if is_process_alive(&pid_path) {
                             let engine_path = dir.join(format!("{}.engine", session));
@@ -31,7 +33,8 @@ pub(super) fn discover_sessions() -> String {
 
                             let mut entry = json!({
                                 "session": session,
-                                "port": port,
+                                "addr": metadata.addr,
+                                "port": metadata.port,
                                 "engine": engine.trim(),
                             });
                             if let Some(ref p) = provider {
@@ -114,5 +117,75 @@ fn is_process_alive(pid_path: &Path) -> bool {
     {
         let _ = pid;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::discover_sessions;
+    use crate::test_utils::EnvGuard;
+    use serde_json::Value;
+
+    fn unique_socket_dir(label: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "agent-browser-stream-discovery-{label}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn test_discover_sessions_reads_json_stream_metadata() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR"]);
+        let socket_dir = unique_socket_dir("json");
+        std::fs::create_dir_all(&socket_dir).expect("socket dir should be created");
+        guard.set(
+            "AGENT_BROWSER_SOCKET_DIR",
+            socket_dir.to_str().expect("socket dir should be utf-8"),
+        );
+
+        std::fs::write(socket_dir.join("json.pid"), std::process::id().to_string())
+            .expect("pid file should be written");
+        std::fs::write(
+            socket_dir.join("json.stream"),
+            r#"{"addr":"0.0.0.0","port":9223}"#,
+        )
+        .expect("stream file should be written");
+
+        let sessions: Vec<Value> = serde_json::from_str(&discover_sessions())
+            .expect("discovered sessions should be valid JSON");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0]["session"], "json");
+        assert_eq!(sessions[0]["addr"], "0.0.0.0");
+        assert_eq!(sessions[0]["port"], 9223);
+
+        let _ = std::fs::remove_dir_all(&socket_dir);
+    }
+
+    #[test]
+    fn test_discover_sessions_reads_legacy_port_only_metadata() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR"]);
+        let socket_dir = unique_socket_dir("legacy");
+        std::fs::create_dir_all(&socket_dir).expect("socket dir should be created");
+        guard.set(
+            "AGENT_BROWSER_SOCKET_DIR",
+            socket_dir.to_str().expect("socket dir should be utf-8"),
+        );
+
+        std::fs::write(socket_dir.join("legacy.pid"), std::process::id().to_string())
+            .expect("pid file should be written");
+        std::fs::write(socket_dir.join("legacy.stream"), "9223")
+            .expect("stream file should be written");
+
+        let sessions: Vec<Value> = serde_json::from_str(&discover_sessions())
+            .expect("discovered sessions should be valid JSON");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0]["addr"], "127.0.0.1");
+        assert_eq!(sessions[0]["port"], 9223);
+
+        let _ = std::fs::remove_dir_all(&socket_dir);
     }
 }

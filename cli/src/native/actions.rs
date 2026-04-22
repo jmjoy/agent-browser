@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::Write;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -4818,9 +4819,9 @@ fn stream_file_path(session_id: &str) -> PathBuf {
     get_socket_dir().join(format!("{}.stream", session_id))
 }
 
-fn write_stream_file(session_id: &str, port: u16) -> Result<(), String> {
+fn write_stream_file(session_id: &str, addr: &str, port: u16) -> Result<(), String> {
     let path = stream_file_path(session_id);
-    fs::write(&path, port.to_string()).map_err(|e| {
+    fs::write(&path, stream::serialize_stream_metadata(addr, port)).map_err(|e| {
         format!(
             "Failed to write stream metadata '{}': {}",
             path.display(),
@@ -4903,6 +4904,11 @@ async fn current_stream_status(state: &DaemonState) -> Value {
 
     json!({
         "enabled": state.stream_server.is_some(),
+        "addr": state
+            .stream_server
+            .as_ref()
+            .map(|server| Value::from(server.addr().to_string()))
+            .unwrap_or(Value::Null),
         "port": state
             .stream_server
             .as_ref()
@@ -4918,16 +4924,31 @@ async fn handle_stream_enable(cmd: &Value, state: &mut DaemonState) -> Result<Va
         return Err("Streaming is already enabled for this session".to_string());
     }
 
+    let requested_addr = cmd
+        .get("addr")
+        .and_then(|value| value.as_str())
+        .unwrap_or("127.0.0.1");
+    let requested_addr = requested_addr
+        .parse::<IpAddr>()
+        .map_err(|_| format!("Invalid stream addr '{}': expected IP address", requested_addr))?
+        .to_string();
+
     let requested_port = match cmd.get("port").and_then(|value| value.as_u64()) {
         Some(raw) => u16::try_from(raw)
             .map_err(|_| format!("Invalid stream port '{}': expected 0-65535", raw))?,
         None => 0,
     };
 
-    let (server, client_slot) =
-        StreamServer::start_without_client(requested_port, state.session_id.clone(), false).await?;
+    let (server, client_slot) = StreamServer::start_without_client(
+        &requested_addr,
+        requested_port,
+        state.session_id.clone(),
+        false,
+    )
+    .await?;
     let port = server.port();
-    if let Err(err) = write_stream_file(&state.session_id, port) {
+    let addr = server.addr().to_string();
+    if let Err(err) = write_stream_file(&state.session_id, &addr, port) {
         server.shutdown().await;
         return Err(err);
     }
@@ -7760,25 +7781,33 @@ mod tests {
             .await
             .expect("status should work before enable");
         assert_eq!(disabled_status["enabled"], false);
+        assert_eq!(disabled_status["addr"], Value::Null);
         assert_eq!(disabled_status["port"], Value::Null);
         assert_eq!(disabled_status["connected"], false);
         assert_eq!(disabled_status["screencasting"], false);
 
-        let enabled_status = handle_stream_enable(&json!({ "port": 0 }), &mut state)
+        let enabled_status = handle_stream_enable(&json!({ "addr": "0.0.0.0", "port": 0 }), &mut state)
             .await
             .expect("stream enable should succeed");
+        let addr = enabled_status["addr"]
+            .as_str()
+            .expect("runtime stream should report a bind addr");
         let port = enabled_status["port"]
             .as_u64()
             .expect("runtime stream should report a bound port");
         assert!(port > 0, "runtime stream should bind a non-zero port");
         assert_eq!(enabled_status["enabled"], true);
+        assert_eq!(addr, "0.0.0.0");
         assert_eq!(enabled_status["connected"], false);
         assert_eq!(enabled_status["screencasting"], false);
 
         let stream_path = socket_dir.join("stream-runtime-session.stream");
-        let port_file =
+        let stream_metadata =
             fs::read_to_string(&stream_path).expect("stream metadata file should exist");
-        assert_eq!(port_file.trim(), port.to_string());
+        let metadata = stream::parse_stream_metadata(&stream_metadata)
+            .expect("stream metadata should parse");
+        assert_eq!(metadata.addr, "0.0.0.0");
+        assert_eq!(u64::from(metadata.port), port);
 
         let duplicate_err = handle_stream_enable(&json!({}), &mut state)
             .await
@@ -7789,6 +7818,7 @@ mod tests {
             .await
             .expect("status should work after enable");
         assert_eq!(status["enabled"], true);
+        assert_eq!(status["addr"], "0.0.0.0");
         assert_eq!(status["port"], port);
 
         let disabled = handle_stream_disable(&mut state)
@@ -7806,6 +7836,7 @@ mod tests {
             .await
             .expect("status should work after disable");
         assert_eq!(final_status["enabled"], false);
+        assert_eq!(final_status["addr"], Value::Null);
         assert_eq!(final_status["port"], Value::Null);
 
         let disable_err = handle_stream_disable(&mut state)
@@ -7831,7 +7862,7 @@ mod tests {
         );
 
         let mut state = DaemonState::new();
-        handle_stream_enable(&json!({ "port": 0 }), &mut state)
+        handle_stream_enable(&json!({ "addr": "127.0.0.1", "port": 0 }), &mut state)
             .await
             .expect("stream enable should succeed");
         state.screencasting = true;
@@ -7860,7 +7891,7 @@ mod tests {
         guard.set("AGENT_BROWSER_SESSION", "stream-disable-cleanup-session");
 
         let mut state = DaemonState::new();
-        handle_stream_enable(&json!({ "port": 0 }), &mut state)
+        handle_stream_enable(&json!({ "addr": "127.0.0.1", "port": 0 }), &mut state)
             .await
             .expect("stream enable should succeed");
 
@@ -7903,7 +7934,7 @@ mod tests {
             .port();
 
         let mut state = DaemonState::new();
-        let err = handle_stream_enable(&json!({ "port": port }), &mut state)
+        let err = handle_stream_enable(&json!({ "addr": "127.0.0.1", "port": port }), &mut state)
             .await
             .expect_err("conflicting port should fail");
         assert!(err.contains("Failed to bind stream server"));
@@ -7918,6 +7949,15 @@ mod tests {
 
         drop(listener);
         let _ = fs::remove_dir_all(&socket_dir);
+    }
+
+    #[tokio::test]
+    async fn test_stream_enable_invalid_addr_returns_error() {
+        let mut state = DaemonState::new();
+        let err = handle_stream_enable(&json!({ "addr": "localhost" }), &mut state)
+            .await
+            .expect_err("non-IP bind addresses should be rejected");
+        assert!(err.contains("Invalid stream addr"));
     }
 
     #[test]
